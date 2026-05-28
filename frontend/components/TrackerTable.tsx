@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useState } from "react";
-import { getApplications, sendAgainApplication } from "@/lib/api";
+import { getApplications, sendAgainApplication, simpleFailureReason } from "@/lib/api";
 
 interface App {
     id: number; hr_email: string; hr_name: string; company: string; position: string;
@@ -37,7 +37,7 @@ export default function TrackerTable() {
             setNewPosition(v => ({ ...v, [app.id]: "" }));
             await load();
         } catch (e: unknown) {
-            setError(e instanceof Error ? e.message : "Could not send again");
+            setError(simpleFailureReason(e));
         } finally {
             setSendingId(null);
         }
@@ -47,9 +47,9 @@ export default function TrackerTable() {
     if (!apps.length) return <p style={{ color: "var(--muted)", fontSize: "14px" }}>No applications sent yet.</p>;
 
     return (
-        <div style={{ overflowX: "auto" }}>
-            {error && <div style={{ marginBottom: 12, color: "var(--text-secondary)", fontSize: 13 }}>{error}</div>}
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
+        <div className="table-scroll tracker-table-wrap" style={{ overflowX: "auto" }}>
+            {error && <div className="mobile-alert" style={{ marginBottom: 12, color: "var(--text-secondary)", fontSize: 13 }}>{error}</div>}
+            <table className="responsive-table tracker-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
                 <thead>
                     <tr style={{ borderBottom: "1px solid var(--border)" }}>
                         {["Company", "Position", "Recruiter", "Status", "Reply", "Sent", "Send again"].map(h => (
@@ -60,18 +60,18 @@ export default function TrackerTable() {
                 <tbody>
                     {apps.map(a => (
                         <tr key={a.id} style={{ borderBottom: "1px solid var(--border)" }}>
-                            <td style={{ padding: "10px 12px", fontWeight: 600 }}>{a.company}</td>
-                            <td style={{ padding: "10px 12px", color: "var(--muted)" }}>{a.position}</td>
-                            <td style={{ padding: "10px 12px" }}>
+                            <td data-label="Company" style={{ padding: "10px 12px", fontWeight: 600 }}>{a.company}</td>
+                            <td data-label="Position" style={{ padding: "10px 12px", color: "var(--muted)" }}>{a.position}</td>
+                            <td data-label="Recruiter" style={{ padding: "10px 12px" }}>
                                 <div style={{ fontWeight: 650 }}>{a.hr_name}</div>
                                 <div style={{ color: "var(--muted)", fontSize: 12 }}>{a.hr_email}</div>
                             </td>
-                            <td style={{ padding: "10px 12px" }}>
+                            <td data-label="Status" style={{ padding: "10px 12px" }}>
                                 <span style={{ background: (statusColor[a.status] || statusColor.other) + "22", color: statusColor[a.status] || statusColor.other, padding: "2px 10px", borderRadius: "20px", fontSize: "12px", fontWeight: 600 }}>
                                     {a.status?.replace(/_/g, " ")}
                                 </span>
                             </td>
-                            <td style={{ padding: "10px 12px", color: "var(--muted)", minWidth: 220 }}>
+                            <td data-label="Reply" style={{ padding: "10px 12px", color: "var(--muted)", minWidth: 220 }}>
                                 {a.has_reply ? (
                                     <div>
                                         <div style={{ color: "var(--text-secondary)", fontSize: 12, lineHeight: 1.45 }}>{a.latest_reply_summary || a.reply_summary}</div>
@@ -81,9 +81,9 @@ export default function TrackerTable() {
                                     <span>No reply yet</span>
                                 )}
                             </td>
-                            <td style={{ padding: "10px 12px", color: "var(--muted)" }}>{a.sent_at ? new Date(a.sent_at).toLocaleDateString() : "—"}</td>
-                            <td style={{ padding: "10px 12px", minWidth: 300 }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                            <td data-label="Sent" style={{ padding: "10px 12px", color: "var(--muted)" }}>{a.sent_at ? new Date(a.sent_at).toLocaleDateString() : "—"}</td>
+                            <td data-label="Send again" style={{ padding: "10px 12px", minWidth: 300 }}>
+                                <div className="tracker-actions" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                                     <button className="btn-ghost" disabled={sendingId === a.id} onClick={() => sendAgain(a, "previous")} style={{ padding: "7px 10px", fontSize: 12 }}>
                                         Previous position
                                     </button>

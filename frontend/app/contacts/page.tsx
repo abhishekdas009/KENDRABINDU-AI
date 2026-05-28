@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import { Briefcase, CheckCircle2, Loader2, Mail, Search, Send, User } from "lucide-react";
-import { getContacts, sendAgainApplication } from "@/lib/api";
+import { getContacts, sendAgainApplication, simpleFailureReason } from "@/lib/api";
 
 interface Contact {
   hr_email: string;
@@ -38,7 +38,7 @@ export default function ContactsPage() {
       const data = await getContacts();
       setContacts(data);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Could not load contacts");
+      setError(simpleFailureReason(e));
     } finally {
       setLoading(false);
     }
@@ -48,7 +48,7 @@ export default function ContactsPage() {
     let active = true;
     getContacts()
       .then((data) => { if (active) setContacts(data); })
-      .catch((e: unknown) => { if (active) setError(e instanceof Error ? e.message : "Could not load contacts"); })
+      .catch((e: unknown) => { if (active) setError(simpleFailureReason(e)); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, []);
@@ -85,27 +85,27 @@ export default function ContactsPage() {
       setNewPosition((value) => ({ ...value, [contact.hr_email]: "" }));
       await load();
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : "Could not send application again");
+      setError(simpleFailureReason(e));
     } finally {
       setSendingEmail("");
     }
   };
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 22, width: "100%" }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16 }}>
+    <div className="mobile-page contacts-page" style={{ display: "flex", flexDirection: "column", gap: 22, width: "100%" }}>
+      <div className="mobile-page-head contacts-head" style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: 16 }}>
         <div>
           <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: 0, color: "var(--text)" }}>Contacts</h1>
           <p style={{ color: "var(--muted)", fontSize: 13, marginTop: 4 }}>Saved recruiters, emails, positions, and resend actions.</p>
         </div>
-        <div style={{ width: "min(360px, 100%)", position: "relative" }}>
+        <div className="mobile-search" style={{ width: "min(360px, 100%)", position: "relative" }}>
           <Search size={15} color="var(--muted)" style={{ position: "absolute", left: 13, top: "50%", transform: "translateY(-50%)" }} />
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search contacts" style={{ paddingLeft: 38 }} />
         </div>
       </div>
 
       {(error || message) && (
-        <div style={{
+        <div className="mobile-alert" style={{
           display: "flex",
           alignItems: "center",
           gap: 9,
@@ -122,6 +122,7 @@ export default function ContactsPage() {
       )}
 
       <motion.div
+        className="mobile-surface contacts-surface"
         initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
         style={{
@@ -136,8 +137,8 @@ export default function ContactsPage() {
         ) : filtered.length === 0 ? (
           <div style={{ padding: 26, color: "var(--muted)", fontSize: 13 }}>No saved contacts yet.</div>
         ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+          <div className="table-scroll contacts-table-wrap" style={{ overflowX: "auto" }}>
+            <table className="responsive-table contacts-table" style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
               <thead>
                 <tr>
                   {["Contact", "Saved Positions", "Last Sent", "Replies", "Action"].map((heading) => (
@@ -159,7 +160,7 @@ export default function ContactsPage() {
                   const active = activeEmail === contact.hr_email;
                   return (
                     <tr key={contact.hr_email} style={{ borderBottom: "1px solid rgba(255,255,255,0.04)" }}>
-                      <td style={{ padding: 18, verticalAlign: "top", minWidth: 280 }}>
+                      <td data-label="Contact" style={{ padding: 18, verticalAlign: "top", minWidth: 280 }}>
                         <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
                           <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.10)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                             <User size={16} color="#D8D8D8" />
@@ -177,7 +178,7 @@ export default function ContactsPage() {
                           </div>
                         </div>
                       </td>
-                      <td style={{ padding: 18, verticalAlign: "top", minWidth: 260 }}>
+                      <td data-label="Saved Positions" style={{ padding: 18, verticalAlign: "top", minWidth: 260 }}>
                         <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
                           {(contact.positions.length ? contact.positions : [contact.last_position]).slice(0, 4).map((position) => (
                             <span key={position} style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "5px 9px", borderRadius: 999, background: "rgba(255,255,255,0.045)", border: "1px solid rgba(255,255,255,0.08)", color: "var(--text-secondary)", fontSize: 12 }}>
@@ -188,15 +189,15 @@ export default function ContactsPage() {
                         </div>
                         <div style={{ color: "var(--muted)", fontSize: 11, marginTop: 9 }}>{contact.send_count} saved send{contact.send_count === 1 ? "" : "s"}</div>
                       </td>
-                      <td style={{ padding: 18, verticalAlign: "top", color: "var(--text-secondary)", fontSize: 12, minWidth: 130 }}>
+                      <td data-label="Last Sent" style={{ padding: 18, verticalAlign: "top", color: "var(--text-secondary)", fontSize: 12, minWidth: 130 }}>
                         {contact.last_sent_at ? new Date(contact.last_sent_at).toLocaleDateString() : "-"}
                       </td>
-                      <td style={{ padding: 18, verticalAlign: "top", minWidth: 220 }}>
+                      <td data-label="Replies" style={{ padding: 18, verticalAlign: "top", minWidth: 220 }}>
                         <div style={{ color: contact.has_reply ? "var(--text-secondary)" : "var(--muted)", fontSize: 12, lineHeight: 1.5 }}>
                           {contact.has_reply ? contact.latest_reply_summary : "No reply yet"}
                         </div>
                       </td>
-                      <td style={{ padding: 18, verticalAlign: "top", minWidth: 310 }}>
+                      <td data-label="Action" style={{ padding: 18, verticalAlign: "top", minWidth: 310 }}>
                         {active ? (
                           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>

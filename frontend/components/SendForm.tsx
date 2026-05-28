@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { sendEmail } from "@/lib/api";
+import { sendEmail, simpleFailureReason } from "@/lib/api";
 import { Send, Loader2, CheckCircle2, Building2, User, Mail, Briefcase } from "lucide-react";
 import { motion } from "framer-motion";
 
@@ -21,7 +21,7 @@ export default function SendForm({ hrEmail, hrName, company, position, resumeCon
       await sendEmail({ hr_email: hrEmail, hr_name: hrName, company, position, resume_content: resumeContent, cover_letter_content: coverLetterContent, ats_score: atsScore });
       setSent(true);
       setTimeout(onDone, 3000);
-    } catch (e: unknown) { setError(e instanceof Error ? e.message : "Failed"); }
+    } catch (e: unknown) { setError(simpleFailureReason(e)); }
     finally { setLoading(false); }
   };
 

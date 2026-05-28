@@ -2,7 +2,6 @@
 import { motion } from "framer-motion";
 import KPICard from "@/components/KPICard";
 import DashboardCharts from "@/components/DashboardCharts";
-import InsightsPanel from "@/components/InsightsPanel";
 import RecentSendsTable from "@/components/RecentSendsTable";
 import RecentReplies from "@/components/RecentReplies";
 import StreakPanel from "@/components/StreakPanel";
@@ -61,7 +60,6 @@ export default function DashboardPage() {
         <div className="dashboard-side-stack">
           <StreakPanel />
           <RecentReplies />
-          <InsightsPanel />
         </div>
       </div>
 

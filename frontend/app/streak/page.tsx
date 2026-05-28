@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Briefcase, CalendarDays, Flame, Mail, Target, Trophy, User } from "lucide-react";
 import { getStreakHistory } from "@/lib/api";
+import FireStreakLogo from "@/components/FireStreakLogo";
 
 interface StreakSend {
   event_id: number;
@@ -49,89 +50,117 @@ export default function StreakPage() {
     { label: "Today", value: `${history?.today_sends ?? 0}/${history?.goal ?? 3}`, icon: Target },
     { label: "Total Sends", value: `${history?.total_sends ?? 0}`, icon: Mail },
   ];
+  const currentStreak = history?.current_streak ?? 0;
+  const todaySends = history?.today_sends ?? 0;
+  const goal = history?.goal ?? 3;
+  const progress = Math.min(100, Math.round((todaySends / Math.max(goal, 1)) * 100));
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 22, width: "100%" }}>
-      <div>
-        <h1 style={{ fontSize: 24, fontWeight: 800, letterSpacing: 0, color: "var(--text)" }}>Streak Tracker</h1>
-        <p style={{ color: "var(--muted)", fontSize: 13, marginTop: 4 }}>Daily sends, past streaks, and every recruiter counted in the streak.</p>
-      </div>
+    <div className="streak-page">
+      <motion.section
+        className="streak-hero"
+        initial={{ opacity: 0, y: 14 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.45, ease: [0.22, 1, 0.36, 1] }}
+      >
+        <div className="streak-hero-copy">
+          <div className="streak-kicker">
+            <Flame size={14} />
+            Streak tracker
+          </div>
+          <h1>Application Streak</h1>
+          <p>Daily sends, past streaks, and every recruiter counted in your momentum.</p>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 14 }}>
+          <div className="streak-hero-metrics">
+            <div>
+              <span>Current run</span>
+              <strong>{currentStreak} days</strong>
+            </div>
+            <div>
+              <span>Today</span>
+              <strong>{todaySends}/{goal}</strong>
+            </div>
+          </div>
+        </div>
+
+        <div className="streak-hero-visual">
+          <FireStreakLogo size="hero" />
+          <div className="streak-goal-card">
+            <span>Daily goal</span>
+            <strong>{progress}%</strong>
+            <div className="streak-goal-track">
+              <div className="streak-goal-fill" style={{ width: `${progress}%` }} />
+            </div>
+          </div>
+        </div>
+      </motion.section>
+
+      <div className="streak-stats-grid">
         {stats.map(({ label, value, icon: Icon }, index) => (
           <motion.div
             key={label}
+            className="streak-stat-card"
             initial={{ opacity: 0, y: 14 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: index * 0.05 }}
-            style={{
-              background: "rgba(12, 12, 12, 0.94)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              borderRadius: 16,
-              padding: 18,
-              minHeight: 116,
-            }}
           >
-            <Icon size={18} color="#D8D8D8" />
-            <div style={{ color: "var(--text)", fontSize: 24, fontWeight: 850, marginTop: 12 }}>{value}</div>
-            <div style={{ color: "var(--muted)", fontSize: 11, fontWeight: 750, textTransform: "uppercase", letterSpacing: "0.05em" }}>{label}</div>
+            <span>
+              <Icon size={18} />
+            </span>
+            <strong>{value}</strong>
+            <small>{label}</small>
           </motion.div>
         ))}
       </div>
 
       <motion.div
+        className="streak-history-panel"
         initial={{ opacity: 0, y: 16 }}
         animate={{ opacity: 1, y: 0 }}
-        style={{
-          background: "rgba(12, 12, 12, 0.94)",
-          border: "1px solid rgba(255,255,255,0.08)",
-          borderRadius: 18,
-          overflow: "hidden",
-        }}
       >
-        <div style={{ padding: "20px 22px", borderBottom: "1px solid rgba(255,255,255,0.06)" }}>
-          <h2 style={{ color: "var(--text)", fontSize: 16, fontWeight: 800, letterSpacing: 0 }}>Past Streak Details</h2>
-          <p style={{ color: "var(--muted)", fontSize: 12, marginTop: 3 }}>Grouped by day with who received each application.</p>
+        <div className="streak-history-head">
+          <h2>Past Streak Details</h2>
+          <p>Grouped by day with who received each application.</p>
         </div>
 
         {loading ? (
-          <div style={{ padding: 24, color: "var(--muted)", fontSize: 13 }}>Loading streak history...</div>
+          <div className="streak-empty">Loading streak history...</div>
         ) : error ? (
-          <div style={{ padding: 24, color: "var(--text-secondary)", fontSize: 13 }}>{error}</div>
+          <div className="streak-empty">{error}</div>
         ) : !history?.days.length ? (
-          <div style={{ padding: 24, color: "var(--muted)", fontSize: 13 }}>No streak events yet.</div>
+          <div className="streak-empty">No streak events yet.</div>
         ) : (
-          <div style={{ display: "flex", flexDirection: "column" }}>
+          <div className="streak-day-list">
             {history.days.map((day) => (
-              <div key={day.event_date} style={{ padding: "18px 22px", borderBottom: "1px solid rgba(255,255,255,0.05)" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 14, marginBottom: 12 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <CalendarDays size={16} color="#D8D8D8" />
+              <div key={day.event_date} className="streak-day">
+                <div className="streak-day-head">
+                  <div className="streak-day-title">
+                    <CalendarDays size={16} />
                     <div>
-                      <div style={{ color: "var(--text)", fontSize: 14, fontWeight: 800 }}>
+                      <strong>
                         {new Date(`${day.event_date}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}
-                      </div>
-                      <div style={{ color: "var(--muted)", fontSize: 11 }}>{day.total_sends} send{day.total_sends === 1 ? "" : "s"}</div>
+                      </strong>
+                      <small>{day.total_sends} send{day.total_sends === 1 ? "" : "s"}</small>
                     </div>
                   </div>
-                  <span style={{ padding: "5px 10px", borderRadius: 999, background: "rgba(255,255,255,0.06)", border: "1px solid rgba(255,255,255,0.09)", color: "var(--text-secondary)", fontSize: 12, fontWeight: 700 }}>
+                  <span className="streak-goal-pill">
                     {day.total_sends}/{history.goal} daily goal
                   </span>
                 </div>
 
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 10 }}>
+                <div className="streak-send-grid">
                   {day.sends.map((send) => (
-                    <div key={send.event_id} style={{ padding: 13, borderRadius: 12, background: "rgba(255,255,255,0.035)", border: "1px solid rgba(255,255,255,0.07)" }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 9, marginBottom: 8 }}>
-                        <User size={14} color="#D8D8D8" />
-                        <span style={{ color: "var(--text)", fontSize: 13, fontWeight: 750 }}>{send.hr_name || "Hiring Team"}</span>
+                    <div key={send.event_id} className="streak-send-card">
+                      <div className="streak-row streak-row-strong">
+                        <User size={14} />
+                        <span>{send.hr_name || "Hiring Team"}</span>
                       </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--text-secondary)", fontSize: 12, marginBottom: 5 }}>
-                        <Mail size={12} color="var(--muted)" />
+                      <div className="streak-row">
+                        <Mail size={12} />
                         <span>{send.hr_email || "No email saved"}</span>
                       </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--text-secondary)", fontSize: 12 }}>
-                        <Briefcase size={12} color="var(--muted)" />
+                      <div className="streak-row">
+                        <Briefcase size={12} />
                         <span>{send.position || "Position not set"}{send.company ? ` at ${send.company}` : ""}</span>
                       </div>
                     </div>

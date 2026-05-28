@@ -1,13 +1,13 @@
 // ============================================================
-// JobMailer — Google Apps Script
+// KendraBindu AI — Google Apps Script
 // File: apps-script/Code.gs
 // Handles: Gmail sending, reply polling, webhook to FastAPI
 // ============================================================
 
 const CONFIG = {
   LOCAL_SERVER: "https://YOUR_NGROK_URL",  // ← Replace after ngrok starts
-  REPLY_CHECK_LABEL: "JobMailer",
-  TRACK_QUERY: 'subject:"Application for" newer_than:180d',
+  REPLY_CHECK_LABEL: "KendraBindu AI",
+  TRACK_QUERY: 'newer_than:180d (subject:application OR subject:profile OR subject:opportunity)',
   SENDER_NAME: "Abhishek Das",
   POLL_INTERVAL_MINUTES: 15,
 };
@@ -20,21 +20,18 @@ function doPost(e) {
     const data = JSON.parse(e.postData.contents);
     const { to, hrName, company, position, resume, coverLetter, appId } = data;
 
-    const subject = `Application for ${position} — Abhishek Das`;
+    const subject = buildSubject(position, company);
     const htmlBody = buildEmailHTML(hrName, company, position, coverLetter);
     const plainBody = buildEmailPlain(hrName, company, position, coverLetter);
+    const attachments = [];
+    if (resume && String(resume).trim()) {
+      attachments.push(Utilities.newBlob(resume, "text/plain", "Abhishek_Das_Resume.txt"));
+    }
 
-    // Send email with resume as text attachment
     GmailApp.sendEmail(to, subject, plainBody, {
       name: CONFIG.SENDER_NAME,
       htmlBody: htmlBody,
-      attachments: [
-        Utilities.newBlob(
-          resume,
-          "text/plain",
-          `Abhishek_Das_${position.replace(/ /g, "_")}_Resume.txt`
-        ),
-      ],
+      attachments: attachments,
     });
 
     // Wait for Gmail to register the sent message
@@ -163,58 +160,45 @@ function setupTrigger() {
 // ─────────────────────────────────────────────────────────────
 // Email HTML Template
 // ─────────────────────────────────────────────────────────────
+function buildSubject(position, company) {
+  const role = String(position || "Open role").replace(/\s+/g, " ").trim();
+  const org = String(company || "").replace(/\s+/g, " ").trim();
+  return org
+    ? `${role} application for ${org} - ${CONFIG.SENDER_NAME}`
+    : `${role} application - ${CONFIG.SENDER_NAME}`;
+}
+
+function escapeHtml(value) {
+  return String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
 function buildEmailHTML(hrName, company, position, coverLetter) {
-  const formattedCL = coverLetter.replace(/\n/g, "<br>");
+  const greeting = hrName && hrName !== "Hiring Team" ? `Hi ${hrName},` : "Dear Hiring Team,";
+  const paragraphs = String(coverLetter || "")
+    .split(/\n{2,}/)
+    .map(function(part) { return part.trim(); })
+    .filter(Boolean)
+    .map(function(part) {
+      return `<p style="margin:0 0 14px">${escapeHtml(part)}</p>`;
+    })
+    .join("\n  ");
   return `
 <!DOCTYPE html>
 <html>
 <head>
   <meta charset="UTF-8">
 </head>
-<body style="
-  font-family: 'Segoe UI', Arial, sans-serif;
-  max-width: 650px;
-  margin: 0 auto;
-  background: #ffffff;
-  color: #1a1a1a;
-  padding: 32px 24px;
-">
-
-  <!-- Header Bar -->
-  <div style="
-    background: linear-gradient(135deg, #1d4ed8, #2563eb);
-    border-radius: 12px;
-    padding: 20px 24px;
-    margin-bottom: 28px;
-  ">
-    <h2 style="margin:0; color:#ffffff; font-size:18px;">
-      Application: ${position}
-    </h2>
-    <p style="margin:4px 0 0; color:#bfdbfe; font-size:13px;">
-      Abhishek Das — Data Engineer, Delhi, India
-    </p>
+<body style="margin:0;background:#ffffff;color:#111111;font-family:Arial,sans-serif;font-size:14px;line-height:1.6">
+  <div style="margin:0;text-align:left">
+    <p style="margin:0 0 14px">${escapeHtml(greeting)}</p>
+    ${paragraphs}
+    <p style="margin:22px 0 0">Best regards,<br><strong>${escapeHtml(CONFIG.SENDER_NAME)}</strong></p>
   </div>
-
-  <!-- Cover Letter Body -->
-  <div style="
-    border-left: 4px solid #2563eb;
-    padding-left: 20px;
-    margin-bottom: 28px;
-    line-height: 1.8;
-    font-size: 15px;
-    color: #374151;
-  ">
-    ${formattedCL}
-  </div>
-
-  <!-- Footer -->
-  <hr style="border: none; border-top: 1px solid #e5e7eb; margin-bottom: 16px;">
-  <p style="font-size: 12px; color: #9ca3af; margin: 0;">
-    📎 Resume attached as .txt file<br>
-    <strong style="color:#6b7280;">Abhishek Das</strong> |
-    Data Engineer | Delhi, India
-  </p>
-
 </body>
 </html>`;
 }
@@ -223,9 +207,11 @@ function buildEmailHTML(hrName, company, position, coverLetter) {
 // Plain Text Fallback
 // ─────────────────────────────────────────────────────────────
 function buildEmailPlain(hrName, company, position, coverLetter) {
-  return `${coverLetter}
+  const greeting = hrName && hrName !== "Hiring Team" ? `Hi ${hrName},` : "Dear Hiring Team,";
+  return `${greeting}
 
----
-Abhishek Das | Data Engineer | Delhi, India
-(Resume attached as .txt file)`;
+${coverLetter}
+
+Best regards,
+${CONFIG.SENDER_NAME}`;
 }

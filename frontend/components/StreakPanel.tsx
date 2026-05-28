@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import { Bell, Flame, Mail, Trophy, type LucideIcon } from "lucide-react";
 import { getStreak } from "@/lib/api";
+import FireStreakLogo from "@/components/FireStreakLogo";
 
 interface Streak {
   current_streak: number;
@@ -46,9 +47,7 @@ export default function StreakPanel() {
           <h3 style={{ color: "var(--text)", fontSize: 15, fontWeight: 800, marginBottom: 4 }}>Application Streak</h3>
           <p style={{ color: "var(--muted)", fontSize: 12 }}>Daily send momentum</p>
         </div>
-        <motion.div animate={{ scale: [1, 1.08, 1] }} transition={{ duration: 1.6, repeat: Infinity }} style={{ width: 38, height: 38, borderRadius: 8, background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.12)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <Flame size={20} color="#F4F4F4" />
-        </motion.div>
+        <FireStreakLogo size="sm" />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>

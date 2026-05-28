@@ -74,13 +74,13 @@ export default function RecentSendsTable() {
       </div>
 
       {/* Table */}
-      <div style={{ overflowX: "auto" }}>
+      <div className="table-scroll recent-sends-table-wrap" style={{ overflowX: "auto" }}>
         {loading ? (
           <div style={{ padding: "20px 18px", display: "flex", flexDirection: "column", gap: "10px" }}>
             {[1,2,3].map(i => <div key={i} className="skeleton" style={{ height: "48px", borderRadius: "10px" }} />)}
           </div>
         ) : (
-          <table style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
+          <table className="responsive-table recent-sends-table" style={{ width: "100%", borderCollapse: "separate", borderSpacing: 0 }}>
             <thead>
               <tr>
                 {["Company", "Position", "Contact", "Status", "Sent"].map(h => (
@@ -109,7 +109,7 @@ export default function RecentSendsTable() {
                     onMouseLeave={e => (e.currentTarget as HTMLElement).style.background = "transparent"}
                   >
                     {/* Company */}
-                    <td style={{ padding: "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
+                    <td data-label="Company" style={{ padding: "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
                         <div style={{
                           width: "30px", height: "30px", borderRadius: "8px",
@@ -126,14 +126,14 @@ export default function RecentSendsTable() {
                       </div>
                     </td>
                     {/* Position */}
-                    <td style={{ padding: "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
+                    <td data-label="Position" style={{ padding: "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                         <Briefcase size={12} color="var(--muted)" />
                         <span style={{ fontSize: "13px", color: "var(--text-secondary)" }}>{a.position}</span>
                       </div>
                     </td>
                     {/* Contact */}
-                    <td style={{ padding: "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
+                    <td data-label="Contact" style={{ padding: "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
                       <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
                         <User size={12} color="var(--muted)" />
                         <span style={{ fontSize: "13px", color: "var(--text-secondary)" }}>{a.hr_name}</span>
@@ -141,7 +141,7 @@ export default function RecentSendsTable() {
                       {a.hr_email && <div style={{ fontSize: "11px", color: "var(--muted)", marginTop: 3 }}>{a.hr_email}</div>}
                     </td>
                     {/* Status */}
-                    <td style={{ padding: "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
+                    <td data-label="Status" style={{ padding: "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
                       <span style={{
                         display: "inline-flex", alignItems: "center", gap: "5px",
                         padding: "4px 10px", borderRadius: "99px",
@@ -158,13 +158,13 @@ export default function RecentSendsTable() {
                       </span>
                     </td>
                     {/* Date */}
-                    <td style={{ padding: "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
+                    <td data-label="Sent" style={{ padding: "12px 18px", borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
                       <span style={{ fontSize: "12px", color: "var(--text-dim)" }}>
                         {a.sent_at ? new Date(a.sent_at).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—"}
                       </span>
                     </td>
                     {/* Arrow */}
-                    <td style={{ padding: "12px 18px 12px 0", borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
+                    <td className="row-arrow" style={{ padding: "12px 18px 12px 0", borderBottom: "1px solid rgba(255,255,255,0.03)" }}>
                       <ChevronRight size={14} color="var(--text-dim)" />
                     </td>
                   </motion.tr>

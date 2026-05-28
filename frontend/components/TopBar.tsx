@@ -16,7 +16,7 @@ interface Notif {
 const DATE_RANGES = ["Today", "Last 7 days", "Last 30 days", "Last 90 days"];
 
 export default function TopBar() {
-  const [searchOpen, setSearchOpen] = useState(true);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [searchVal, setSearchVal] = useState("");
   const [dateRange, setDateRange] = useState("Last 30 days");
   const [dateOpen, setDateOpen] = useState(false);
@@ -116,7 +116,7 @@ export default function TopBar() {
           value={searchVal}
           onChange={(event) => setSearchVal(event.target.value)}
           onFocus={() => setSearchOpen(true)}
-          placeholder="Search campaigns, contacts..."
+          placeholder="Search contacts..."
         />
         {searchVal && (
           <button type="button" aria-label="Clear search" className="topbar-clear" onClick={() => setSearchVal("")}>

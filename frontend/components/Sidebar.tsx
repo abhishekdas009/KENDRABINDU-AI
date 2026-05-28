@@ -3,23 +3,20 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import {
-  LayoutDashboard, Send, Megaphone, FileText, Users,
-  List, ScrollText, BarChart2, Sparkles, ChevronLeft,
-  ChevronRight, Zap, Flame,
+  LayoutDashboard, Send, FileText, Users,
+  ScrollText, ChevronLeft,
+  ChevronRight, Flame,
 } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
+import FireStreakLogo from "@/components/FireStreakLogo";
 
 const NAV = [
   { href: "/dashboard",   label: "Dashboard",  icon: LayoutDashboard, accent: "#D8D8D8" },
   { href: "/",            label: "Send Mail",   icon: Send,            accent: "#D8D8D8" },
   { href: "/streak",      label: "Streak",      icon: Flame,           accent: "#D8D8D8" },
-  { href: "/campaigns",   label: "Campaigns",   icon: Megaphone,       accent: "#D8D8D8" },
   { href: "/templates",   label: "Templates",   icon: FileText,        accent: "#D8D8D8" },
   { href: "/contacts",    label: "Contacts",    icon: Users,           accent: "#D8D8D8" },
-  { href: "/lists",       label: "Lists",       icon: List,            accent: "#D8D8D8" },
   { href: "/tracker",     label: "Mail Logs",   icon: ScrollText,      accent: "#D8D8D8" },
-  { href: "/reports",     label: "Reports",     icon: BarChart2,       accent: "#D8D8D8" },
-  { href: "/insights",    label: "Insights",    icon: Sparkles,        accent: "#D8D8D8" },
 ];
 
 export default function Sidebar() {
@@ -79,16 +76,9 @@ export default function Sidebar() {
           <motion.div
             whileHover={{ scale: 1.06, rotate: 5 }}
             transition={{ type: "spring", stiffness: 400, damping: 15 }}
-            style={{
-              width: "36px", height: "36px",
-              borderRadius: "10px",
-              background: "linear-gradient(135deg, #2A2A2A 0%, #050505 100%)",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              boxShadow: "0 8px 24px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.18)",
-              flexShrink: 0,
-            }}
+            style={{ flexShrink: 0 }}
           >
-            <Zap size={17} color="#F4F4F4" fill="#F4F4F4" />
+            <FireStreakLogo size="nav" label="KendraBindu AI streak logo" />
           </motion.div>
 
           <AnimatePresence>
@@ -100,7 +90,7 @@ export default function Sidebar() {
                 transition={{ duration: 0.2, ease: "easeOut" }}
               >
                 <div style={{ fontWeight: 800, fontSize: "15px", letterSpacing: 0, color: "var(--text)", lineHeight: 1 }}>
-                  JobMailer
+                  KendraBindu AI
                 </div>
                 <div style={{ fontSize: "10.5px", color: "var(--muted)", marginTop: "2px", letterSpacing: "0.03em", fontWeight: 500 }}>
                   AI ENGINE v3

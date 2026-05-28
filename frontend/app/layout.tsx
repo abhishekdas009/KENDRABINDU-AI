@@ -5,7 +5,7 @@ import Sidebar from "../components/Sidebar";
 import TopBar from "../components/TopBar";
 
 export const metadata: Metadata = {
-  title: "JobMailer — AI Mail Tracking & Sending Platform",
+  title: "KendraBindu AI — AI Mail Tracking & Sending Platform",
   description: "Premium AI-powered email intelligence dashboard for enterprise growth teams.",
 };
 

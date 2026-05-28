@@ -6,17 +6,20 @@ import shutil
 import subprocess
 import tempfile
 import html
+import hashlib
 import mimetypes
 import sqlite3
 from pathlib import Path
 from urllib.parse import quote_plus, unquote
+from email.utils import formataddr, formatdate, make_msgid
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.application import MIMEApplication
 from datetime import datetime, date, timedelta
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional, List
 from groq import Groq
@@ -36,8 +39,20 @@ if not COVER_LETTER_TEX_PATH.is_absolute():
 RESUME_FILE_ID       = os.getenv("RESUME_FILE_ID", "1JzAj25AsXBa_v0LTTmkmjU02awWyInHK")
 DB_PATH              = os.getenv("JOBMAILER_DB_PATH", "jobmailer.db")
 STREAK_WHATSAPP_TO   = os.getenv("STREAK_WHATSAPP_TO", "918929797009")
-STREAK_EMAIL_TO      = os.getenv("STREAK_EMAIL_TO", GMAIL_ADDRESS)
+STREAK_EMAIL_TO      = os.getenv("STREAK_EMAIL_TO", "")
 WHATSAPP_WEBHOOK_URL = os.getenv("WHATSAPP_WEBHOOK_URL", "")
+LINKEDIN_URL         = os.getenv("LINKEDIN_URL", "https://www.linkedin.com/in/abhishekdas009")
+GITHUB_URL           = os.getenv("GITHUB_URL", "https://github.com/abhishekdas009")
+PORTFOLIO_URL        = os.getenv("PORTFOLIO_URL", "https://abhishekdas009.github.io")
+ATTACH_COVER_LETTER  = os.getenv("ATTACH_COVER_LETTER", "false").strip().lower() in {"1", "true", "yes", "on"}
+INCLUDE_SIGNATURE_LINKS = os.getenv("INCLUDE_SIGNATURE_LINKS", "false").strip().lower() in {"1", "true", "yes", "on"}
+ALLOW_SELF_APPLICATION_TESTS = os.getenv("ALLOW_SELF_APPLICATION_TESTS", "false").strip().lower() in {"1", "true", "yes", "on"}
+MAX_APPLICATION_SENDS_PER_24H = int(os.getenv("MAX_APPLICATION_SENDS_PER_24H", "25"))
+MIN_SECONDS_BETWEEN_APPLICATION_SENDS = int(os.getenv("MIN_SECONDS_BETWEEN_APPLICATION_SENDS", "120"))
+MIN_DAYS_BETWEEN_SAME_RECIPIENT = int(os.getenv("MIN_DAYS_BETWEEN_SAME_RECIPIENT", "3"))
+RESUME_TEMPLATE_DIR = Path(os.getenv("RESUME_TEMPLATE_DIR", str(BASE_DIR / "resume_templates")))
+MAX_RESUME_TEMPLATE_BYTES = int(os.getenv("MAX_RESUME_TEMPLATE_BYTES", str(10 * 1024 * 1024)))
+ALLOWED_RESUME_TEMPLATE_EXTENSIONS = {".pdf", ".doc", ".docx"}
 
 app = FastAPI()
 app.add_middleware(
@@ -61,6 +76,7 @@ def db_conn():
 
 
 def init_db():
+    RESUME_TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
     with db_conn() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS applications (
@@ -132,6 +148,17 @@ def init_db():
                 hr_name TEXT DEFAULT '',
                 read INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS resume_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                original_filename TEXT NOT NULL,
+                stored_filename TEXT NOT NULL,
+                content_type TEXT DEFAULT '',
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                file_hash TEXT NOT NULL,
+                uploaded_at TEXT NOT NULL
             )
         """)
         conn.commit()
@@ -255,17 +282,174 @@ PUBLIC_EMAIL_DOMAINS = {
 COMMON_SECOND_LEVEL_SUFFIXES = {"co", "com", "net", "org", "ac", "edu", "gov"}
 
 
+def clean_subject(value: str, fallback: str = "Job application") -> str:
+    subject = re.sub(r"\s+", " ", (value or "").strip())
+    subject = subject.replace("—", "-").replace("–", "-")
+    subject = re.sub(r"[\r\n]+", " ", subject)
+    return (subject or fallback)[:120]
+
+
+def same_email(left: str, right: str) -> bool:
+    return left.strip().lower() == right.strip().lower() and bool(left.strip())
+
+
+def application_subject(raw_subject: str, position: str, company: str = "") -> str:
+    position_text = re.sub(r"\s+", " ", (position or "Open role").strip())
+    company_text = re.sub(r"\s+", " ", (company or "").strip())
+    subject = clean_subject(raw_subject, f"{position_text} application - {SENDER_NAME}")
+    lowered = subject.lower()
+    company_lower = company_text.lower()
+    sender_token = SENDER_NAME.split()[0].lower() if SENDER_NAME else ""
+    generic_subjects = {
+        f"{position_text} application".lower(),
+        f"application for {position_text}".lower(),
+        f"{position_text} opportunity".lower(),
+    }
+
+    if company_text and company_lower not in lowered:
+        subject = f"{position_text} application for {company_text} - {SENDER_NAME}"
+    elif lowered in generic_subjects or (sender_token and sender_token not in lowered and len(subject) < 70):
+        subject = f"{subject} - {SENDER_NAME}"
+    return clean_subject(subject, f"{position_text} application - {SENDER_NAME}")
+
+
+def normalize_attachment_language(value: str, include_cover_letter: bool = False) -> str:
+    text = value or ""
+    if include_cover_letter:
+        attachment_line = "I have attached my resume and cover letter for context."
+    else:
+        attachment_line = "I have attached my resume for context."
+        text = re.sub(r"\bmy resume and (?:a )?(?:tailored )?cover letter\b", "my resume", text, flags=re.I)
+        text = re.sub(r"\bmy resume and (?:the )?cover letter\b", "my resume", text, flags=re.I)
+        text = re.sub(r"\bresume and (?:a )?(?:tailored )?cover letter\b", "resume", text, flags=re.I)
+
+    has_resume_attachment = re.search(r"\battach(?:ed|ing)?\b.*\bresume\b|\bresume\b.*\battach(?:ed|ing)?\b", text, flags=re.I)
+    if not has_resume_attachment:
+        text = f"{text.rstrip()}\n\n{attachment_line}"
+    return text.strip()
+
+
+def email_paragraphs(value: str) -> List[str]:
+    normalized = value.replace("\\n", "\n")
+    chunks = [p.strip() for p in re.split(r"\n{2,}", normalized) if p.strip()]
+    if chunks:
+        return chunks
+    return [line.strip() for line in normalized.splitlines() if line.strip()]
+
+
+def simple_email_html(greeting: str, body_text: str) -> str:
+    body = "\n  ".join(
+        f'<p style="margin:0 0 14px">{html.escape(paragraph)}</p>'
+        for paragraph in email_paragraphs(body_text)
+    )
+    return f"""
+<div style="font-family:Arial,sans-serif;font-size:14px;color:#111111;line-height:1.6;margin:0;text-align:left">
+  <p style="margin:0 0 14px">{html.escape(greeting)}</p>
+  {body}
+  {social_signature_html()}
+</div>"""
+
+
+def application_send_stats(recipient_email: str) -> dict:
+    now = datetime.utcnow()
+    day_ago = (now - timedelta(hours=24)).isoformat()
+    recipient = recipient_email.strip().lower()
+    with db_conn() as conn:
+        day_count = conn.execute(
+            "SELECT COUNT(*) AS c FROM applications WHERE datetime(sent_at) >= datetime(?)",
+            (day_ago,),
+        ).fetchone()["c"]
+        last_send = conn.execute(
+            "SELECT sent_at FROM applications ORDER BY datetime(sent_at) DESC, id DESC LIMIT 1"
+        ).fetchone()
+        last_recipient_send = conn.execute(
+            """
+            SELECT sent_at
+            FROM applications
+            WHERE lower(hr_email) = ?
+            ORDER BY datetime(sent_at) DESC, id DESC
+            LIMIT 1
+            """,
+            (recipient,),
+        ).fetchone()
+    return {
+        "day_count": day_count,
+        "last_sent_at": last_send["sent_at"] if last_send else "",
+        "last_recipient_sent_at": last_recipient_send["sent_at"] if last_recipient_send else "",
+    }
+
+
+def parse_iso_datetime(value: str) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def enforce_application_send_limits(recipient_email: str):
+    if same_email(recipient_email, GMAIL_ADDRESS) and not ALLOW_SELF_APPLICATION_TESTS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Do not send application tests to the same Gmail account you send from. "
+                "Use a separate inbox for testing so Gmail does not learn these messages as self-sent spam."
+            ),
+        )
+
+    stats = application_send_stats(recipient_email)
+    now = datetime.utcnow()
+
+    if MAX_APPLICATION_SENDS_PER_24H > 0 and stats["day_count"] >= MAX_APPLICATION_SENDS_PER_24H:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"Daily send limit reached ({MAX_APPLICATION_SENDS_PER_24H}/24h). "
+                "Slow sending helps rebuild Gmail sender reputation."
+            ),
+        )
+
+    last_sent_at = parse_iso_datetime(stats["last_sent_at"])
+    if last_sent_at and MIN_SECONDS_BETWEEN_APPLICATION_SENDS > 0:
+        wait_seconds = MIN_SECONDS_BETWEEN_APPLICATION_SENDS - int((now - last_sent_at).total_seconds())
+        if wait_seconds > 0:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Wait {wait_seconds} seconds before sending the next application email.",
+            )
+
+    last_recipient_sent_at = parse_iso_datetime(stats["last_recipient_sent_at"])
+    if last_recipient_sent_at and MIN_DAYS_BETWEEN_SAME_RECIPIENT > 0:
+        next_allowed = last_recipient_sent_at + timedelta(days=MIN_DAYS_BETWEEN_SAME_RECIPIENT)
+        if now < next_allowed:
+            remaining = next_allowed - now
+            days = max(1, remaining.days + (1 if remaining.seconds else 0))
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"This recruiter was emailed recently. Wait about {days} day(s) before another send "
+                    "to avoid duplicate-looking outreach."
+                ),
+            )
+
+
 def send_via_smtp(to: str, subject: str, plain_text: str, html_body: str, attachments: Optional[List[dict]] = None):
     if not GMAIL_ADDRESS or not GMAIL_APP_PASS:
         raise ValueError("GMAIL_ADDRESS or GMAIL_APP_PASSWORD missing in .env")
+    to_email = to.strip()
+    sender_domain = GMAIL_ADDRESS.split("@")[-1] if "@" in GMAIL_ADDRESS else "gmail.com"
     msg = MIMEMultipart("mixed")
-    msg["From"]    = f"{SENDER_NAME} <{GMAIL_ADDRESS}>"
-    msg["To"]      = to
-    msg["Subject"] = subject
+    msg["From"] = formataddr((SENDER_NAME, GMAIL_ADDRESS))
+    msg["To"] = to_email
+    msg["Reply-To"] = formataddr((SENDER_NAME, GMAIL_ADDRESS))
+    msg["Date"] = formatdate(localtime=True)
+    msg["Message-ID"] = make_msgid(domain=sender_domain)
+    msg["Subject"] = clean_subject(subject)
 
     body = MIMEMultipart("alternative")
-    body.attach(MIMEText(plain_text, "plain"))
-    body.attach(MIMEText(html_body,  "html"))
+    body.attach(MIMEText(plain_text, "plain", "utf-8"))
+    body.attach(MIMEText(html_body, "html", "utf-8"))
     msg.attach(body)
 
     for attachment in attachments or []:
@@ -280,8 +464,9 @@ def send_via_smtp(to: str, subject: str, plain_text: str, html_body: str, attach
         msg.attach(part)
 
     with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.ehlo()
         server.login(GMAIL_ADDRESS, GMAIL_APP_PASS)
-        server.sendmail(GMAIL_ADDRESS, to, msg.as_string())
+        server.sendmail(GMAIL_ADDRESS, [to_email], msg.as_string())
 
 
 # ── Direct Application Helpers ───────────────────────────────────
@@ -601,36 +786,130 @@ def build_cover_letter_pdf(
 
 CANDIDATE_CONTEXT = """
 Abhishek Das is a recent MCA graduate focused on Python, SQL, data analysis, data reporting,
-Power BI dashboards, and practical data workflows. Highlights include supply-chain analysis
-that identified $250,000 in annual savings, Power BI dashboards used by 30+ team members,
-a churn prediction model with 87% accuracy, and a transport delay prediction system with
-85% accuracy. Keep claims truthful and do not invent employer experience, certifications, or
-tools that are not implied by this context.
+Power BI dashboards, ETL/data cleaning, and practical data workflows. Resume-backed highlights:
+- Supply-chain analysis at Sukoon Unlimited that identified $250,000 in annual savings and improved profitability by 20%.
+- Power BI dashboards and automated ETL/reporting workflows at Unified Mentor for 30+ stakeholders.
+- Churn prediction model with 87% accuracy.
+- Transport delay prediction system with 85% accuracy.
+- Comfortable with Python, SQL, Pandas, Scikit-learn, Power BI, Tableau, and AWS/Azure cloud basics.
+Keep claims truthful and do not invent employer experience, certifications, or tools that are
+not implied by this context.
 """.strip()
 
 
-def fallback_tailored_copy(position: str, company: str = "") -> dict:
+def strip_latex_to_text(value: str) -> str:
+    text = re.sub(r"%.*", "", value)
+    text = re.sub(r"\\lettersection\{([^}]*)\}", r"\n\1\n", text)
+    text = re.sub(r"\\[a-zA-Z]+\*?(?:\[[^\]]*\])?(?:\{([^{}]*)\})?", lambda m: m.group(1) or " ", text)
+    text = re.sub(r"[{}]", " ", text)
+    text = text.replace(r"\$", "$").replace(r"\%", "%").replace(r"\&", "&")
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
+
+
+def cover_letter_context_text() -> str:
+    try:
+        source = COVER_LETTER_TEX_PATH.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    match = re.search(r"\\begin\{cvletter\}(.*?)\\end\{cvletter\}", source, flags=re.S)
+    return strip_latex_to_text(match.group(1) if match else source)
+
+
+def candidate_links() -> List[dict]:
+    if not INCLUDE_SIGNATURE_LINKS:
+        return []
+    links = [
+        {"label": "LinkedIn", "icon": "in", "url": LINKEDIN_URL},
+        {"label": "GitHub", "icon": "GH", "url": GITHUB_URL},
+        {"label": "Portfolio", "icon": "P", "url": PORTFOLIO_URL},
+    ]
+    return [link for link in links if link["url"].strip()]
+
+
+def social_signature_plain() -> str:
+    lines = [
+        "Best regards,",
+        SENDER_NAME,
+        GMAIL_ADDRESS,
+    ]
+    for link in candidate_links():
+        lines.append(f"{link['label']}: {link['url']}")
+    return "\n".join(lines)
+
+
+def social_signature_html() -> str:
+    link_html = []
+    for link in candidate_links():
+        url = html.escape(link["url"], quote=True)
+        label = html.escape(link["label"])
+        link_html.append(
+            f'{label}: <a href="{url}" style="color:#111111;text-decoration:underline">{url}</a>'
+        )
+    links = "<br>".join(link_html)
+    links_block = f'\n  <p style="margin:8px 0 0;font-size:13px;line-height:1.5">{links}</p>' if links else ""
+    return f"""
+  <p style="margin:22px 0 0">Best regards,<br>
+    <strong>{html.escape(SENDER_NAME)}</strong><br>
+    <a href="mailto:{html.escape(GMAIL_ADDRESS, quote=True)}" style="color:#111111;text-decoration:underline">{html.escape(GMAIL_ADDRESS)}</a>
+  </p>
+  {links_block}"""
+
+
+def clean_email_body(value: str) -> str:
+    lines = []
+    for line in value.replace("\\n", "\n").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            lines.append("")
+            continue
+        if re.match(r"^(dear|hi|hello)\b", stripped, flags=re.I):
+            continue
+        if re.match(r"^(best regards|regards|sincerely|cheers|thank you)[,!.]?$", stripped, flags=re.I):
+            continue
+        if stripped.lower() in {SENDER_NAME.lower(), GMAIL_ADDRESS.lower()}:
+            continue
+        lines.append(stripped)
+    cleaned = "\n".join(lines)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned
+
+
+def fallback_tailored_copy(position: str, company: str = "", hr_name: str = "", include_cover_letter: bool = False) -> dict:
     company_phrase = f" at {company}" if company else ""
+    recruiter_phrase = hr_name or "the hiring team"
+    attachment_line = (
+        "I have attached my resume and cover letter for context."
+        if include_cover_letter
+        else "I have attached my resume for context."
+    )
     return {
+        "subject": application_subject(f"{position} application{company_phrase}", position, company),
+        "greeting": f"Hi {hr_name}," if hr_name and hr_name != "Hiring Team" else "Dear Hiring Team,",
         "email_body": (
-            f"I am reaching out to share my application for the {position} role{company_phrase}. "
-            "I have attached my resume and a tailored cover letter for your review.\n\n"
-            "I would be grateful if you could consider my profile for this opportunity. "
-            "Please feel free to contact me on this email for any follow-up or future reference."
+            f"I am writing about the {position} role{company_phrase} and wanted to share my profile with {recruiter_phrase}. "
+            "My work has been centered on Python, SQL, Power BI, data cleaning, and practical analytics projects.\n\n"
+            "Relevant examples include supply-chain analysis that identified $250,000 in annual savings, "
+            "Power BI dashboards for 30+ stakeholders, and predictive models for churn and transport delays. "
+            f"{attachment_line}\n\n"
+            "If my background looks useful for the role, I would be glad to speak further."
         ),
         "match_summary": [],
         "cover_sections": [],
     }
 
 
-def clean_tailored_copy(raw: dict, position: str, company: str = "") -> dict:
-    fallback = fallback_tailored_copy(position, company)
+def clean_tailored_copy(raw: dict, position: str, company: str = "", hr_name: str = "", include_cover_letter: bool = False) -> dict:
+    fallback = fallback_tailored_copy(position, company, hr_name, include_cover_letter)
     if not isinstance(raw, dict):
         return fallback
 
-    email_body = str(raw.get("email_body") or "").strip()
+    subject = application_subject(str(raw.get("subject") or "").strip() or fallback["subject"], position, company)
+    greeting = str(raw.get("greeting") or "").strip() or fallback["greeting"]
+    email_body = clean_email_body(str(raw.get("email_body") or "").strip())
     if not email_body:
         email_body = fallback["email_body"]
+    email_body = normalize_attachment_language(email_body, include_cover_letter)
 
     sections = []
     for section in raw.get("cover_sections") or []:
@@ -648,46 +927,84 @@ def clean_tailored_copy(raw: dict, position: str, company: str = "") -> dict:
             match_summary.append(value[:180])
 
     return {
+        "subject": subject[:120],
+        "greeting": greeting[:80],
         "email_body": email_body[:2200],
         "match_summary": match_summary[:4],
         "cover_sections": sections[:4],
     }
 
 
-def generate_tailored_application_copy(recipient: dict, position: str, job_description: str) -> dict:
+def generate_tailored_application_copy(
+    recipient: dict,
+    position: str,
+    job_description: str,
+    profiles: Optional[List[dict]] = None,
+) -> dict:
     company = (recipient.get("company") or "").strip()
-    if not job_description.strip() or not GROQ_API_KEY:
-        return fallback_tailored_copy(position, company)
+    hr_name = (recipient.get("hr_name") or "Hiring Team").strip()
+    if not GROQ_API_KEY:
+        return fallback_tailored_copy(position, company, hr_name, ATTACH_COVER_LETTER)
+
+    profile_context = ""
+    if profiles:
+        profile_context = json.dumps(profiles[:2], ensure_ascii=False)
+    cover_context = cover_letter_context_text()[:3200]
+    jd_context = job_description.strip()[:4500] or "No job description was provided. Tailor using the role title, company/domain, recruiter hints, and candidate resume facts."
 
     try:
         raw = groq_json(f"""
-You are writing a concise, truthful job application email and cover letter for Abhishek Das.
-Use the job description to emphasize relevant fit, but do not invent facts beyond the candidate context.
+You are an expert job-application copywriter. Write one fresh, concise cold email and cover-letter sections for Abhishek Das.
+The output must be personalized to this exact recruiter, company, and position. Do not reuse generic wording.
 
-Candidate context:
+Hard rules:
+- Return ONLY valid JSON.
+- Do not invent facts, employers, degrees, links, interviews, referrals, or recruiter relationship.
+- Do not say "I hope you are doing well".
+- Do not include a signature, candidate name, email address, phone number, or social links in email_body.
+- Do not include an "Application details" section.
+- Keep the email natural, direct, and human: 3 short paragraphs, 90-150 words total.
+- Make it read like a one-to-one note, not a campaign or marketing email.
+- Avoid generic phrases such as "excited to apply", "utilize my skills", "drive insights", "high accuracy", and "I am confident".
+- Mention the target position and company if company is known.
+- If recruiter name looks like a real person, use it in greeting. Otherwise use "Dear Hiring Team,".
+- Pick only the strongest 2-3 resume facts for this role.
+- End with a light call to action, not a pushy sales line.
+- Attachment policy for this send: {"resume and cover letter" if ATTACH_COVER_LETTER else "resume only"}.
+
+Resume/candidate facts:
 {CANDIDATE_CONTEXT}
 
+Current cover-letter source to learn tone and facts from:
+{cover_context}
+
+Recipient and role:
+Recruiter name: {hr_name}
+Recruiter email: {recipient.get("hr_email") or ""}
 Role: {position}
 Company: {company or "Not specified"}
-Recruiter: {recipient.get("hr_name") or "Hiring Team"}
+Company needs review: {recipient.get("company_needs_review")}
+Profile/search hints: {profile_context or "None"}
 
 Job description:
-{job_description[:4500]}
+{jd_context}
 
 Return ONLY a valid JSON object with exactly these keys:
 {{
-  "email_body": "2 short paragraphs for the email body, no greeting or sign-off",
+  "subject": "short customized subject line, under 85 characters",
+  "greeting": "Hi FirstName, or Dear Hiring Team,",
+  "email_body": "3 short paragraphs for the email body, no greeting and no sign-off",
   "match_summary": ["short match point 1", "short match point 2", "short match point 3"],
   "cover_sections": [
     {{"title": "About Me", "body": "one concise paragraph"}},
-    {{"title": "Why This Role", "body": "one concise paragraph tied to the job description"}},
-    {{"title": "Why Me", "body": "one concise paragraph tied to the candidate context"}}
+    {{"title": "Why This Role", "body": "one concise paragraph tied to the role/company/JD"}},
+    {{"title": "Why Me", "body": "one concise paragraph tied to the best resume facts"}}
   ]
 }}
-""", temperature=0.35)
-        return clean_tailored_copy(raw, position, company)
+""", temperature=0.62)
+        return clean_tailored_copy(raw, position, company, hr_name, ATTACH_COVER_LETTER)
     except Exception:
-        return fallback_tailored_copy(position, company)
+        return fallback_tailored_copy(position, company, hr_name, ATTACH_COVER_LETTER)
 
 
 def get_resume_pdf() -> bytes:
@@ -697,6 +1014,75 @@ def get_resume_pdf() -> bytes:
 def safe_filename_part(value: str, fallback: str = "Company") -> str:
     clean = re.sub(r"[^A-Za-z0-9]+", "_", (value or fallback).strip()).strip("_")
     return clean or fallback
+
+
+def resume_template_path(stored_filename: str) -> Path:
+    safe_name = Path(stored_filename).name
+    return RESUME_TEMPLATE_DIR / safe_name
+
+
+def resume_template_to_dict(row: sqlite3.Row) -> dict:
+    item = dict(row)
+    uploaded_at = item.get("uploaded_at") or ""
+    size_bytes = int(item.get("size_bytes") or 0)
+    item["size_bytes"] = size_bytes
+    item["uploaded_at"] = uploaded_at
+    item["preview_url"] = f"/api/resume-templates/{item['id']}/file"
+    item["download_url"] = f"/api/resume-templates/{item['id']}/download"
+    item["is_pdf"] = Path(item.get("original_filename", "")).suffix.lower() == ".pdf"
+    return item
+
+
+def list_resume_templates() -> List[dict]:
+    with db_conn() as conn:
+        rows = conn.execute("""
+            SELECT *
+            FROM resume_templates
+            ORDER BY datetime(uploaded_at) DESC, id DESC
+        """).fetchall()
+    return [resume_template_to_dict(row) for row in rows]
+
+
+def get_resume_template(template_id: int) -> Optional[dict]:
+    with db_conn() as conn:
+        row = conn.execute("SELECT * FROM resume_templates WHERE id = ?", (template_id,)).fetchone()
+    return resume_template_to_dict(row) if row else None
+
+
+def resume_template_stats() -> dict:
+    week_start = (datetime.utcnow() - timedelta(days=7)).isoformat()
+    with db_conn() as conn:
+        row = conn.execute("""
+            SELECT
+                COUNT(DISTINCT file_hash) AS unique_count,
+                COUNT(*) AS version_count,
+                COALESCE(SUM(size_bytes), 0) AS storage_used
+            FROM resume_templates
+        """).fetchone()
+        week = conn.execute(
+            "SELECT COUNT(*) AS c FROM resume_templates WHERE datetime(uploaded_at) >= datetime(?)",
+            (week_start,),
+        ).fetchone()["c"]
+    return {
+        "total_unique_resumes": row["unique_count"] or 0,
+        "this_week_uploads": week or 0,
+        "template_versions": row["version_count"] or 0,
+        "storage_used_bytes": row["storage_used"] or 0,
+    }
+
+
+def insert_resume_template(original_filename: str, stored_filename: str, content_type: str, size_bytes: int, file_hash: str) -> dict:
+    uploaded_at = datetime.utcnow().isoformat()
+    with db_conn() as conn:
+        cur = conn.execute("""
+            INSERT INTO resume_templates (
+                original_filename, stored_filename, content_type, size_bytes, file_hash, uploaded_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (original_filename, stored_filename, content_type, size_bytes, file_hash, uploaded_at))
+        conn.commit()
+        row = conn.execute("SELECT * FROM resume_templates WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return resume_template_to_dict(row)
 
 
 def discover_profiles(email: str, hr_name: str = "", company: str = "") -> List[dict]:
@@ -934,14 +1320,14 @@ def get_streak_history() -> dict:
 
 def notify_streak(streak: dict, app_data: dict):
     message = (
-        f"JobMailer streak update: {streak['current_streak']} day streak. "
+        f"KendraBindu AI streak update: {streak['current_streak']} day streak. "
         f"Sent {app_data.get('position')} application to {app_data.get('hr_email')}."
     )
     if STREAK_EMAIL_TO:
         try:
             send_via_smtp(
                 STREAK_EMAIL_TO,
-                "JobMailer streak update",
+                "KendraBindu AI streak update",
                 message,
                 f"<div style='font-family:Arial,sans-serif;text-align:left;color:#111;line-height:1.6'><p>{html.escape(message)}</p></div>",
             )
@@ -1219,34 +1605,26 @@ def send_email(req: SendRequest):
     if not GMAIL_ADDRESS or not GMAIL_APP_PASS:
         raise HTTPException(status_code=500, detail="GMAIL_ADDRESS or GMAIL_APP_PASSWORD missing in .env")
 
-    subject = f"Application for {req.position} — {SENDER_NAME}"
+    try:
+        recipient_email = normalize_email(req.hr_email)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    enforce_application_send_limits(recipient_email)
 
-    plain = f"Dear {req.hr_name},\n\n{req.cover_letter_content}\n\nBest regards,\n{SENDER_NAME}\n{GMAIL_ADDRESS}"
+    subject = application_subject(f"Application for {req.position}", req.position, req.company)
 
-    cover_paragraphs = "".join(
-        f"<p>{line}</p>"
-        for line in req.cover_letter_content.replace("\\n", "\n").split("\n")
-        if line.strip()
-    )
-    html = f"""
-<div style="font-family:Arial,sans-serif;font-size:14px;color:#1a1a1a;line-height:1.75;max-width:620px;margin:0 auto">
-  <p>Dear <strong>{req.hr_name}</strong>,</p>
-  {cover_paragraphs}
-  <br>
-  <hr style="border:none;border-top:1px solid #e5e5e5">
-  <p style="font-size:11px;color:#999">Resume: {req.resume_content[:200].strip()}...</p>
-  <br>
-  <p>Best regards,<br><strong>{SENDER_NAME}</strong><br>
-  <span style="color:#666;font-size:12px">{GMAIL_ADDRESS}</span></p>
-</div>"""
+    greeting = f"Hi {req.hr_name}," if req.hr_name and req.hr_name != "Hiring Team" else "Dear Hiring Team,"
+    body_text = clean_email_body(req.cover_letter_content) or req.cover_letter_content.strip()
+    plain = f"{greeting}\n\n{body_text}\n\n{social_signature_plain()}"
+    html = simple_email_html(greeting, body_text)
 
     try:
-        send_via_smtp(req.hr_email, subject, plain, html)
+        send_via_smtp(recipient_email, subject, plain, html)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"SMTP error: {str(e)}")
 
     saved = insert_application({
-        "hr_email":  req.hr_email,
+        "hr_email":  recipient_email,
         "hr_name":   req.hr_name,
         "company":   req.company,
         "position":  req.position,
@@ -1284,21 +1662,27 @@ def direct_send(req: DirectSendRequest):
     if req.company and req.company.strip():
         recipient["company"] = req.company.strip()
         recipient["company_needs_review"] = False
+    enforce_application_send_limits(recipient["hr_email"])
+
     profiles = discover_profiles(recipient["hr_email"], recipient.get("hr_name", ""), recipient.get("company", ""))
     primary_profile = profiles[0] if profiles else {}
     job_description = (req.job_description or "").strip()
-    tailored_copy = generate_tailored_application_copy(recipient, req.position, job_description)
-    cover_sections = tailored_copy.get("cover_sections") if job_description else None
+    tailored_copy = generate_tailored_application_copy(recipient, req.position, job_description, profiles)
+    cover_sections = tailored_copy.get("cover_sections") or None
 
     company_for_filename = recipient.get("company") or "Company"
-    company_resume = safe_filename_part(company_for_filename).lower()
     company_cover = safe_filename_part(company_for_filename)
-    resume_filename = f"Abhishek_{company_resume}.pdf"
-    cover_filename = f"CoverLetter_{company_cover}.pdf"
+    position_file = safe_filename_part(req.position, "Role")
+    resume_filename = f"Abhishek_Das_Resume_{position_file}.pdf"
+    cover_filename = f"Abhishek_Das_Cover_Letter_{company_cover}.pdf" if ATTACH_COVER_LETTER else ""
 
     try:
         resume_pdf = get_resume_pdf()
-        cover_pdf = build_cover_letter_pdf(recipient, req.position, recipient.get("company"), cover_sections)
+        cover_pdf = (
+            build_cover_letter_pdf(recipient, req.position, recipient.get("company"), cover_sections)
+            if ATTACH_COVER_LETTER
+            else None
+        )
     except ValueError as e:
         raise HTTPException(status_code=500, detail=str(e))
     except Exception as e:
@@ -1306,57 +1690,25 @@ def direct_send(req: DirectSendRequest):
 
     hr_name = recipient.get("hr_name") or "Hiring Team"
     company = recipient.get("company") or ""
-    subject = f"Application for {req.position} — {SENDER_NAME}"
+    subject = application_subject(tailored_copy.get("subject") or "", req.position, company)
     email_body = tailored_copy["email_body"]
-    email_paragraphs = [p.strip() for p in re.split(r"\n{2,}", email_body) if p.strip()]
-    email_html = "\n  ".join(f"<p>{html.escape(p)}</p>" for p in email_paragraphs)
-    match_points = tailored_copy.get("match_summary") or []
-    match_plain = ""
-    match_html = ""
-    if match_points:
-        match_plain = "\nRole fit highlights:\n" + "\n".join(f"- {point}" for point in match_points) + "\n"
-        match_html = """
-  <div style="border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;margin:18px 0;background:#fafafa">
-    <p style="margin:0 0 8px"><strong>Role fit highlights</strong></p>
-    <ul style="margin:0;padding-left:18px;color:#374151">
-      {items}
-    </ul>
-  </div>""".format(items="".join(f"<li>{html.escape(point)}</li>" for point in match_points))
+    greeting = tailored_copy.get("greeting") or (
+        f"Hi {hr_name}," if hr_name and hr_name != "Hiring Team" else "Dear Hiring Team,"
+    )
 
-    plain = f"""Dear {hr_name},
-
-I hope you are doing well.
+    plain = f"""{greeting}
 
 {email_body}
-{match_plain}
 
-Application details:
-- Position: {req.position}
-- Recruiter email: {recipient["hr_email"]}
-- Company: {company or "Not specified"}
-- Job description used: {"Yes" if job_description else "No"}
-
-Best regards,
-{SENDER_NAME}
-{GMAIL_ADDRESS}
+{social_signature_plain()}
 """
-    html_body = f"""
-<div style="font-family:Arial,sans-serif;font-size:14px;color:#1a1a1a;line-height:1.75;max-width:720px;margin:0;text-align:left">
-  <p>Dear <strong>{html.escape(hr_name)}</strong>,</p>
-  <p>I hope you are doing well.</p>
-  {email_html}
-  {match_html}
-  <div style="border:1px solid #e5e7eb;border-radius:10px;padding:14px 16px;margin:18px 0;background:#fafafa">
-    <p style="margin:0 0 6px"><strong>Application details</strong></p>
-    <p style="margin:0;color:#374151">Position: {html.escape(req.position)}</p>
-    <p style="margin:0;color:#374151">Recruiter email: {html.escape(recipient["hr_email"])}</p>
-    <p style="margin:0;color:#374151">Company: {html.escape(company or "Not specified")}</p>
-    <p style="margin:0;color:#374151">Job description used: {"Yes" if job_description else "No"}</p>
-  </div>
-  <br>
-  <p>Best regards,<br><strong>{html.escape(SENDER_NAME)}</strong><br>
-  <span style="color:#666;font-size:12px">{html.escape(GMAIL_ADDRESS)}</span></p>
-</div>"""
+    html_body = simple_email_html(greeting, email_body)
+
+    attachments = [
+        {"filename": resume_filename, "content": resume_pdf, "content_type": "application/pdf"},
+    ]
+    if ATTACH_COVER_LETTER and cover_pdf and cover_filename:
+        attachments.append({"filename": cover_filename, "content": cover_pdf, "content_type": "application/pdf"})
 
     try:
         send_via_smtp(
@@ -1364,10 +1716,7 @@ Best regards,
             subject,
             plain,
             html_body,
-            attachments=[
-                {"filename": resume_filename, "content": resume_pdf, "content_type": "application/pdf"},
-                {"filename": cover_filename, "content": cover_pdf, "content_type": "application/pdf"},
-            ],
+            attachments=attachments,
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"SMTP error: {str(e)}")
@@ -1380,7 +1729,7 @@ Best regards,
         "ats_score": 0,
         "sent_at":   datetime.utcnow().isoformat(),
         "status":    "sent",
-        "reply_summary": f"{'JD-tailored. ' if job_description else ''}Attachments: {resume_filename}, {cover_filename}",
+        "reply_summary": f"AI-tailored cold mail. Attachments: {', '.join(item['filename'] for item in attachments)}",
         "resume_filename": resume_filename,
         "cover_filename": cover_filename,
         "profile_url": primary_profile.get("url", ""),
@@ -1394,7 +1743,7 @@ Best regards,
         "status": "success",
         "message": f"Application sent to {hr_name} <{recipient['hr_email']}>",
         "recipient": recipient,
-        "attachments": [resume_filename, cover_filename],
+        "attachments": [item["filename"] for item in attachments],
         "application": saved,
         "streak": streak,
         "profiles": profiles,
@@ -1411,6 +1760,74 @@ def get_applications():
 @app.get("/api/contacts")
 def contacts():
     return list_contacts()
+
+
+@app.get("/api/resume-templates")
+def get_resume_templates():
+    return {
+        "templates": list_resume_templates(),
+        "stats": resume_template_stats(),
+    }
+
+
+@app.post("/api/resume-templates")
+async def upload_resume_template(file: UploadFile = File(...)):
+    original_filename = Path(file.filename or "resume.pdf").name
+    extension = Path(original_filename).suffix.lower()
+    if extension not in ALLOWED_RESUME_TEMPLATE_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Upload a PDF, DOC, or DOCX resume template.")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Resume file is empty.")
+    if len(content) > MAX_RESUME_TEMPLATE_BYTES:
+        max_mb = MAX_RESUME_TEMPLATE_BYTES // (1024 * 1024)
+        raise HTTPException(status_code=400, detail=f"Resume file must be {max_mb} MB or smaller.")
+
+    file_hash = hashlib.sha256(content).hexdigest()
+    base_name = safe_filename_part(Path(original_filename).stem, "resume")
+    stored_filename = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}_{file_hash[:12]}_{base_name}{extension}"
+    destination = resume_template_path(stored_filename)
+    destination.write_bytes(content)
+
+    content_type = file.content_type or mimetypes.guess_type(original_filename)[0] or "application/octet-stream"
+    template = insert_resume_template(original_filename, stored_filename, content_type, len(content), file_hash)
+    return {
+        "template": template,
+        "stats": resume_template_stats(),
+    }
+
+
+@app.get("/api/resume-templates/{template_id}/file")
+def preview_resume_template(template_id: int):
+    template = get_resume_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Resume template not found")
+    path = resume_template_path(template["stored_filename"])
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Resume template file is missing")
+    filename = template["original_filename"].replace('"', "")
+    return FileResponse(
+        path,
+        media_type=template.get("content_type") or mimetypes.guess_type(filename)[0] or "application/octet-stream",
+        filename=filename,
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
+@app.get("/api/resume-templates/{template_id}/download")
+def download_resume_template(template_id: int):
+    template = get_resume_template(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Resume template not found")
+    path = resume_template_path(template["stored_filename"])
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Resume template file is missing")
+    return FileResponse(
+        path,
+        media_type=template.get("content_type") or "application/octet-stream",
+        filename=template["original_filename"],
+    )
 
 
 @app.get("/api/streak")
